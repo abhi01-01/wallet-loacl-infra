@@ -1,0 +1,211 @@
+services:
+  # 1. Database Layer
+  postgres:
+    image: postgres:16-alpine
+    container_name: wallet-postgres-d
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - wallet_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U wallet_user -d walletdb" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - wallet-network
+
+  # 2. Caching & Rate Limiting Layer
+  redis:
+    image: redis:7.2-alpine
+    container_name: wallet-redis-d
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - wallet_redis_data:/data
+    healthcheck:
+      test: ["CMD","redis-cli","ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - wallet-network
+
+  # 3. Kafka (Message Queue)
+  kafka:
+    image: apache/kafka:4.1.2
+    container_name: wallet-kafka-d
+    hostname: kafka
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+
+      KAFKA_LISTENERS: PLAINTEXT://:9092,HOST://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - wallet_kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    networks:
+      - wallet-network
+
+  # 4. Domain Layer
+  wallet-service:
+    build:
+      context: ../WalletService
+      dockerfile: Dockerfile
+#    REMOVED: container_name (Allows Compose to auto-generate unique names: -1, -2, -3)
+    container_name: wallet-service-d
+#    REMOVED: ports (Prevents host port collisions. Containers expose 8081 internally only)
+    ports:
+      - "8081:8081"
+    environment:
+      SERVER_PORT: 8081
+      SPRING_PROFILES_ACTIVE: dev
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+#      SPRING_DATA_REDIS_HOST: wallet-redis-d
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      WALLET_KAFKA_ENABLED: "true"
+      WALLET_OUTBOX_PUBLISHER_ENABLED: "true"
+      WALLET_KAFKA_AUDIT_CONSUMER_ENABLED: "true"
+      WALLET_KAFKA_CONSUMER_GROUP_ID: wallet-service-audit-consumer-docker
+
+      WALLET_OUTBOX_FIXED_DELAY_MS: "5000"
+      WALLET_OUTBOX_RETRY_DELAY_MS: "60000"
+      WALLET_OUTBOX_MAX_ATTEMPTS: "5"
+      WALLET_OUTBOX_STALE_LOCK_TIMEOUT_MS: "120000"
+
+      LOGGING_LEVEL_ORG_APACHE_KAFKA: WARN
+      LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_KAFKA: WARN
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    env_file: .env
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health | grep UP || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - wallet-network
+    restart: on-failure
+
+  # 4. Edge / Gateway Layer
+  api-gateway:
+    build:
+      context: ../APIgateway
+    container_name: api-gateway-d
+    ports:
+      - "8080:8080"   # Public Ingress Layer
+      - "8082:8082"   # Private Management/Doc Layer
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      SERVER_PORT: 8080
+      SPRING_DATA_REDIS_HOST: wallet-redis-d
+      WALLET_SERVICE_URL: http://wallet-service:8081
+    depends_on:
+      wallet-service:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file: .env
+    networks:
+      - wallet-network
+
+  # Frontend
+  wallet-web:
+    build:
+      context: ../wallet-web
+      dockerfile: Dockerfile
+    container_name: wallet-web-d
+    ports:
+      - "3001:3000"
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8080
+      INTERNAL_API_BASE_URL: http://api-gateway:8080
+    depends_on:
+      - api-gateway
+    networks:
+      - wallet-network
+
+  # 5. Observability (Prometheus, tempo and grafana)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus-d
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # Bridge to your Mac
+    networks:
+      - wallet-network
+
+  tempo:
+    image: grafana/tempo:latest
+    container_name: tempo-d
+    command: [ "-config.file=/etc/tempo.yaml" ]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo.yaml
+    ports:
+      - "3200:3200"   # Tempo API
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP (Spring Boot Target)
+    networks:
+      - wallet-network
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana-d
+    volumes:
+      - ./grafana/grafana.yml:/etc/grafana.yml
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    depends_on:
+      - prometheus
+      - tempo
+    networks:
+      - wallet-network
+
+# Global Network Declaration
+networks:
+  wallet-network:
+    driver: bridge
+# Global Volume Declaration (This fixes your error)
+volumes:
+  wallet_pgdata:
+  wallet_redis_data:
+  wallet_kafka_data:
+  grafana_data:
