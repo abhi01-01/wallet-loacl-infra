@@ -1,0 +1,339 @@
+name: wallet-platform-prod
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging: *default-logging
+  init: true
+
+services:
+  caddy:
+    <<: *service-defaults
+    image: ${CADDY_IMAGE:-caddy:2.8.4-alpine}
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL}
+      WEB_DOMAIN: ${WEB_DOMAIN}
+      API_DOMAIN: ${API_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      wallet-web:
+        condition: service_healthy
+      api-gateway:
+        condition: service_healthy
+    networks:
+      - edge-network
+    # caddy needs to bind to CAP_NET_BIND_SERVICE for ports 80/443 as non-root;
+    # add it back explicitly since cap_drop: ALL removes it
+    cap_add:
+      - NET_BIND_SERVICE
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: 0.25
+          memory: 256M
+        reservations:
+          cpus: 0.10
+          memory: 128M
+
+  wallet-web:
+    <<: *service-defaults
+    image: ${WALLET_WEB_IMAGE}
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/.next/cache
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_BASE_URL: ${PROD_NEXT_PUBLIC_API_BASE_URL}
+      NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${PROD_NEXT_PUBLIC_GOOGLE_CLIENT_ID}
+      NEXT_PUBLIC_RAZORPAY_KEY_ID: ${PROD_NEXT_PUBLIC_RAZORPAY_KEY_ID}
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    networks:
+      - edge-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: 0.50
+          memory: 512M
+        reservations:
+          cpus: 0.10
+          memory: 256M
+
+  api-gateway:
+    <<: *service-defaults
+    image: ${API_GATEWAY_IMAGE}
+    ports:
+      - "127.0.0.1:8082:8082"
+    read_only: true
+    tmpfs:
+      - /tmp
+    stop_grace_period: 30s
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8080
+      MANAGEMENT_SERVER_PORT: 8082
+      WALLET_SERVICE_URL: http://wallet-service:8081
+      GATEWAY_INTERNAL_SECRET: ${PROD_GATEWAY_INTERNAL_SECRET}
+      JWT_SECRET: ${PROD_JWT_SECRET}
+      REDIS_HOST: ${PROD_REDIS_HOST}
+      REDIS_PORT: ${PROD_REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${PROD_REDIS_PASSWORD}
+      REDIS_SSL_ENABLED: ${PROD_REDIS_SSL_ENABLED:-true}
+      SPRING_DATA_REDIS_HOST: ${PROD_REDIS_HOST}
+      SPRING_DATA_REDIS_PORT: ${PROD_REDIS_PORT:-6379}
+      SPRING_DATA_REDIS_PASSWORD: ${PROD_REDIS_PASSWORD}
+      SPRING_DATA_REDIS_SSL_ENABLED: ${PROD_REDIS_SSL_ENABLED:-true}
+      TRUSTED_PROXY_CIDRS: ${PROD_TRUSTED_PROXY_CIDRS}
+      JAVA_TOOL_OPTIONS: >-
+        -XX:MaxRAMPercentage=65 -XX:+UseContainerSupport
+        -XX:+ExitOnOutOfMemoryError
+        -Djava.security.egd=file:/dev/./urandom
+    depends_on:
+      wallet-service:
+        condition: service_healthy
+    networks:
+      - edge-network
+      - app-network
+      - observability-network
+    healthcheck:
+      # served on the management port, which is not published outside app-network
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8082/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          cpus: 0.75
+          memory: 512M
+        reservations:
+          cpus: 0.25
+          memory: 384M
+
+  wallet-service:
+    <<: *service-defaults
+    image: ${WALLET_SERVICE_IMAGE}
+    read_only: true
+    tmpfs:
+      - /tmp
+    stop_grace_period: 45s
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8081
+      MANAGEMENT_SERVER_PORT: ${WALLET_MANAGEMENT_SERVER_PORT:-8081}
+      SPRING_DATASOURCE_URL: ${PROD_SPRING_DATASOURCE_URL}
+      SPRING_DATASOURCE_USERNAME: ${PROD_SPRING_DATASOURCE_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${PROD_SPRING_DATASOURCE_PASSWORD}
+      SPRING_DATA_REDIS_HOST: ${PROD_REDIS_HOST}
+      SPRING_DATA_REDIS_PORT: ${PROD_REDIS_PORT:-6379}
+      SPRING_DATA_REDIS_PASSWORD: ${PROD_REDIS_PASSWORD}
+      SPRING_DATA_REDIS_SSL_ENABLED: ${PROD_REDIS_SSL_ENABLED:-true}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: ${PROD_KAFKA_BOOTSTRAP_SERVERS}
+      SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL: ${PROD_KAFKA_SECURITY_PROTOCOL:-SASL_SSL}
+      SPRING_KAFKA_PROPERTIES_SASL_MECHANISM: ${PROD_KAFKA_SASL_MECHANISM:-PLAIN}
+      SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG: ${PROD_KAFKA_SASL_JAAS_CONFIG}
+      SPRING_KAFKA_PROPERTIES_ALLOW_AUTO_CREATE_TOPICS: "false"
+      SPRING_KAFKA_ADMIN_AUTO_CREATE: "false"
+      KAFKA_BOOTSTRAP_SERVERS: ${PROD_KAFKA_BOOTSTRAP_SERVERS}
+      KAFKA_SECURITY_PROTOCOL: ${PROD_KAFKA_SECURITY_PROTOCOL:-SASL_SSL}
+      KAFKA_SASL_MECHANISM: ${PROD_KAFKA_SASL_MECHANISM:-PLAIN}
+      KAFKA_SASL_JAAS_CONFIG: ${PROD_KAFKA_SASL_JAAS_CONFIG}
+      GATEWAY_INTERNAL_SECRET: ${PROD_GATEWAY_INTERNAL_SECRET}
+      AUTHORIZED_SYSTEM_IDS: ${PROD_AUTHORIZED_SYSTEM_IDS}
+      JWT_SECRET: ${PROD_JWT_SECRET}
+      JWT_EXPIRATION_ACCESS: ${PROD_JWT_EXPIRATION_ACCESS:-900000}
+      JWT_EXPIRATION_REFRESH: ${PROD_JWT_EXPIRATION_REFRESH:-604800000}
+      GOOGLE_CLIENT_ID: ${PROD_GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${PROD_GOOGLE_CLIENT_SECRET}
+      RAZORPAY_KEY_ID: ${PROD_RAZORPAY_KEY_ID}
+      RAZORPAY_KEY_SECRET: ${PROD_RAZORPAY_KEY_SECRET}
+      RAZORPAY_WEBHOOK_SECRET: ${PROD_RAZORPAY_WEBHOOK_SECRET}
+      BREVO_API_KEY: ${PROD_BREVO_API_KEY}
+      BREVO_SENDER_EMAIL: ${PROD_BREVO_SENDER_EMAIL}
+      MAIL_SENDER_NAME: ${PROD_MAIL_SENDER_NAME:-Wallet Service}
+      DB_POOL_NAME: ${DB_POOL_NAME:-WalletServiceHikariPool}
+      DB_POOL_AUTO_COMMIT: ${DB_POOL_AUTO_COMMIT:-false}
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-20}
+      DB_POOL_MIN_IDLE: ${DB_POOL_MIN_IDLE:-5}
+      DB_POOL_CONNECTION_TIMEOUT_MS: ${DB_POOL_CONNECTION_TIMEOUT_MS:-30000}
+      DB_POOL_IDLE_TIMEOUT_MS: ${DB_POOL_IDLE_TIMEOUT_MS:-600000}
+      DB_POOL_MAX_LIFETIME_MS: ${DB_POOL_MAX_LIFETIME_MS:-1800000}
+      DB_POOL_VALIDATION_TIMEOUT_MS: ${DB_POOL_VALIDATION_TIMEOUT_MS:-5000}
+      HIBERNATE_JDBC_FETCH_SIZE: ${HIBERNATE_JDBC_FETCH_SIZE:-50}
+      WALLET_KAFKA_ENABLED: ${WALLET_KAFKA_ENABLED:-true}
+      WALLET_OUTBOX_PUBLISHER_ENABLED: ${WALLET_OUTBOX_PUBLISHER_ENABLED:-true}
+      WALLET_KAFKA_AUDIT_CONSUMER_ENABLED: ${WALLET_KAFKA_AUDIT_CONSUMER_ENABLED:-true}
+      WALLET_KAFKA_CONSUMER_GROUP_ID: ${WALLET_KAFKA_CONSUMER_GROUP_ID:-wallet-service-audit-consumer-prod}
+      WALLET_OUTBOX_FIXED_DELAY_MS: ${WALLET_OUTBOX_FIXED_DELAY_MS:-5000}
+      WALLET_OUTBOX_RETRY_DELAY_MS: ${WALLET_OUTBOX_RETRY_DELAY_MS:-60000}
+      WALLET_OUTBOX_MAX_ATTEMPTS: ${WALLET_OUTBOX_MAX_ATTEMPTS:-5}
+      WALLET_OUTBOX_STALE_LOCK_TIMEOUT_MS: ${WALLET_OUTBOX_STALE_LOCK_TIMEOUT_MS:-120000}
+      JAVA_TOOL_OPTIONS: >-
+        -XX:MaxRAMPercentage=65 -XX:+UseContainerSupport
+        -XX:+ExitOnOutOfMemoryError
+        -Djava.security.egd=file:/dev/./urandom
+    networks:
+      - app-network
+      - observability-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:${WALLET_MANAGEMENT_SERVER_PORT:-8081}/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          cpus: 1.00
+          memory: 768M
+        reservations:
+          cpus: 0.25
+          memory: 512M
+
+  prometheus:
+    <<: *service-defaults
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.55.1}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION_TIME:-15d}
+      - --web.enable-lifecycle
+    ports:
+      - "127.0.0.1:9090:9090"
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./prometheus/prometheus.prod.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - observability-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: 0.50
+          memory: 512M
+        reservations:
+          cpus: 0.10
+          memory: 256M
+
+  tempo:
+    <<: *service-defaults
+    image: ${TEMPO_IMAGE:-grafana/tempo:2.6.1}
+    command:
+      - -config.file=/etc/tempo.yaml
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./tempo/tempo.prod.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    networks:
+      - observability-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3200/ready || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: 0.50
+          memory: 512M
+        reservations:
+          cpus: 0.10
+          memory: 256M
+
+  grafana:
+    <<: *service-defaults
+    image: ${GRAFANA_IMAGE:-grafana/grafana:11.3.0}
+    ports:
+      - "127.0.0.1:3000:3000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://127.0.0.1:3000}
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/grafana.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+    networks:
+      - observability-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: 0.50
+          memory: 512M
+        reservations:
+          cpus: 0.10
+          memory: 256M
+
+networks:
+  edge-network:
+    driver: bridge
+  app-network:
+    driver: bridge
+  observability-network:
+    driver: bridge
+    internal: true
+
+volumes:
+  caddy_data:
+  caddy_config:
+  prometheus_data:
+  tempo_data:
+  grafana_data:
