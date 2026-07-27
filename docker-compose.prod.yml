@@ -120,6 +120,8 @@ services:
     depends_on:
       wallet-service:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - edge-network
       - app-network
@@ -159,15 +161,11 @@ services:
       SPRING_DATA_REDIS_PASSWORD: ${PROD_REDIS_PASSWORD}
       SPRING_DATA_REDIS_SSL_ENABLED: ${PROD_REDIS_SSL_ENABLED:-true}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: ${PROD_KAFKA_BOOTSTRAP_SERVERS}
-      SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL: ${PROD_KAFKA_SECURITY_PROTOCOL:-SASL_SSL}
-      SPRING_KAFKA_PROPERTIES_SASL_MECHANISM: ${PROD_KAFKA_SASL_MECHANISM:-PLAIN}
-      SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG: ${PROD_KAFKA_SASL_JAAS_CONFIG}
+      SPRING_KAFKA_PROPERTIES_SECURITY_PROTOCOL: ${PROD_KAFKA_SECURITY_PROTOCOL:-PLAINTEXT}
       SPRING_KAFKA_PROPERTIES_ALLOW_AUTO_CREATE_TOPICS: "false"
       SPRING_KAFKA_ADMIN_AUTO_CREATE: "false"
       KAFKA_BOOTSTRAP_SERVERS: ${PROD_KAFKA_BOOTSTRAP_SERVERS}
-      KAFKA_SECURITY_PROTOCOL: ${PROD_KAFKA_SECURITY_PROTOCOL:-SASL_SSL}
-      KAFKA_SASL_MECHANISM: ${PROD_KAFKA_SASL_MECHANISM:-PLAIN}
-      KAFKA_SASL_JAAS_CONFIG: ${PROD_KAFKA_SASL_JAAS_CONFIG}
+      KAFKA_SECURITY_PROTOCOL: ${PROD_KAFKA_SECURITY_PROTOCOL:-PLAINTEXT}
       GATEWAY_INTERNAL_SECRET: ${PROD_GATEWAY_INTERNAL_SECRET}
       AUTHORIZED_SYSTEM_IDS: ${PROD_AUTHORIZED_SYSTEM_IDS}
       JWT_SECRET: ${PROD_JWT_SECRET}
@@ -183,8 +181,8 @@ services:
       MAIL_SENDER_NAME: ${PROD_MAIL_SENDER_NAME:-Wallet Service}
       DB_POOL_NAME: ${DB_POOL_NAME:-WalletServiceHikariPool}
       DB_POOL_AUTO_COMMIT: ${DB_POOL_AUTO_COMMIT:-false}
-      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-20}
-      DB_POOL_MIN_IDLE: ${DB_POOL_MIN_IDLE:-5}
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-5}
+      DB_POOL_MIN_IDLE: ${DB_POOL_MIN_IDLE:-1}
       DB_POOL_CONNECTION_TIMEOUT_MS: ${DB_POOL_CONNECTION_TIMEOUT_MS:-30000}
       DB_POOL_IDLE_TIMEOUT_MS: ${DB_POOL_IDLE_TIMEOUT_MS:-600000}
       DB_POOL_MAX_LIFETIME_MS: ${DB_POOL_MAX_LIFETIME_MS:-1800000}
@@ -219,6 +217,84 @@ services:
         reservations:
           cpus: 0.25
           memory: 512M
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: wallet-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\"" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: wallet-redis
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${PROD_REDIS_PASSWORD}
+    command:
+      - sh
+      - -c
+      - redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+    volumes:
+      - redis_data:/data
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: wallet-kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+    volumes:
+      - kafka_data:/tmp/kraft-combined-logs
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --list >/dev/null 2>&1" ]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
 
   prometheus:
     <<: *service-defaults
@@ -252,6 +328,8 @@ services:
         reservations:
           cpus: 0.10
           memory: 256M
+    profiles:
+      - observability
 
   tempo:
     <<: *service-defaults
@@ -280,6 +358,8 @@ services:
         reservations:
           cpus: 0.10
           memory: 256M
+    profiles:
+      - observability
 
   grafana:
     <<: *service-defaults
@@ -321,6 +401,8 @@ services:
         reservations:
           cpus: 0.10
           memory: 256M
+    profiles:
+      - observability
 
 networks:
   edge-network:
@@ -337,3 +419,6 @@ volumes:
   prometheus_data:
   tempo_data:
   grafana_data:
+  postgres_data:
+  redis_data:
+  kafka_data:
