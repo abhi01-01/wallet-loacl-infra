@@ -60,16 +60,16 @@ services:
     build:
       context: ../wallet-web
       dockerfile: Dockerfile
+      args:
+        NODE_ENV: production
+        NEXT_PUBLIC_API_BASE_URL: ${PROD_NEXT_PUBLIC_API_BASE_URL}
+        NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${PROD_NEXT_PUBLIC_GOOGLE_CLIENT_ID}
+        NEXT_PUBLIC_RAZORPAY_KEY_ID: ${PROD_NEXT_PUBLIC_RAZORPAY_KEY_ID}
     image: wallet-web:oci-local
     read_only: true
     tmpfs:
       - /tmp
       - /app/.next/cache
-    environment:
-      NODE_ENV: production
-      NEXT_PUBLIC_API_BASE_URL: ${PROD_NEXT_PUBLIC_API_BASE_URL}
-      NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${PROD_NEXT_PUBLIC_GOOGLE_CLIENT_ID}
-      NEXT_PUBLIC_RAZORPAY_KEY_ID: ${PROD_NEXT_PUBLIC_RAZORPAY_KEY_ID}
     depends_on:
       api-gateway:
         condition: service_healthy
