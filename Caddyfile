@@ -1,28 +1,29 @@
 {
-	email {$ACME_EMAIL}
+    email {$ACME_EMAIL}
 }
 
-{$WEB_DOMAIN} {
-	encode zstd gzip
+{$APP_DOMAIN} {
+    encode zstd gzip
 
-	header {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
-		Referrer-Policy "strict-origin-when-cross-origin"
-	}
+    # Global Security Headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
 
-	reverse_proxy wallet-web:3000
-}
+    # Frontend specific security header (Apply only to non-API routes)
+    @web {
+        not path /api/* /v3/api-docs* /swagger-ui*
+    }
+    header @web X-Frame-Options "DENY"
 
-{$API_DOMAIN} {
-	encode zstd gzip
+    # API Gateway Routing
+    reverse_proxy /api/* api-gateway:8080
+    reverse_proxy /v3/api-docs* api-gateway:8080
+    reverse_proxy /swagger-ui* api-gateway:8080
+    reverse_proxy /swagger-ui.html api-gateway:8080
 
-	header {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-		X-Content-Type-Options "nosniff"
-		Referrer-Policy "strict-origin-when-cross-origin"
-	}
-
-	reverse_proxy api-gateway:8080
+    # Web Frontend Fallback
+    reverse_proxy wallet-web:3000
 }

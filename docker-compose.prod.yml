@@ -25,7 +25,6 @@ services:
     environment:
       ACME_EMAIL: ${ACME_EMAIL}
       WEB_DOMAIN: ${WEB_DOMAIN}
-      API_DOMAIN: ${API_DOMAIN}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -295,6 +294,27 @@ services:
       timeout: 10s
       retries: 10
       start_period: 40s
+
+  kafka-init:
+    image: apache/kafka:3.8.0
+    container_name: wallet-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - app-network
+    restart: "no"
+    command:
+      - bash
+      - -c
+      - >
+        /opt/kafka/bin/kafka-topics.sh
+        --bootstrap-server kafka:9092
+        --create
+        --if-not-exists
+        --topic wallet.transaction.posted.v1
+        --partitions 3
+        --replication-factor 1
 
   prometheus:
     <<: *service-defaults
