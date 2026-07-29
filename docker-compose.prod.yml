@@ -57,7 +57,10 @@ services:
 
   wallet-web:
     <<: *service-defaults
-    image: ${WALLET_WEB_IMAGE}
+    build:
+      context: ../wallet-web
+      dockerfile: Dockerfile
+    image: wallet-web:oci-local
     read_only: true
     tmpfs:
       - /tmp
@@ -89,7 +92,12 @@ services:
 
   api-gateway:
     <<: *service-defaults
-    image: ${API_GATEWAY_IMAGE}
+    build:
+      context: ../api-gateway
+      dockerfile: Dockerfile
+    image: wallet-api-gateway:oci-local
+    container_name: wallet-api-gateway
+    restart: unless-stopped
     ports:
       - "127.0.0.1:8082:8082"
     read_only: true
@@ -143,7 +151,10 @@ services:
 
   wallet-service:
     <<: *service-defaults
-    image: ${WALLET_SERVICE_IMAGE}
+    build:
+      context: ../wallet-service
+      dockerfile: Dockerfile
+    image: wallet-service:oci-local
     read_only: true
     tmpfs:
       - /tmp
