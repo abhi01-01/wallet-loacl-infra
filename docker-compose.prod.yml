@@ -162,7 +162,8 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: prod
       SERVER_PORT: 8081
-      MANAGEMENT_SERVER_PORT: ${WALLET_MANAGEMENT_SERVER_PORT:-8081}
+      MANAGEMENT_SERVER_PORT: ${WALLET_MANAGEMENT_SERVER_PORT:-8082}
+      ACTUATOR_OBSCURE_PATH: ${PROD_ACTUATOR_OBSCURE_PATH:-internal-probe-849284}
       SPRING_DATASOURCE_URL: ${PROD_SPRING_DATASOURCE_URL}
       SPRING_DATASOURCE_USERNAME: ${PROD_SPRING_DATASOURCE_USERNAME}
       SPRING_DATASOURCE_PASSWORD: ${PROD_SPRING_DATASOURCE_PASSWORD}
@@ -214,7 +215,7 @@ services:
       - app-network
       - observability-network
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:${WALLET_MANAGEMENT_SERVER_PORT:-8081}/actuator/health || exit 1"]
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:$${MANAGEMENT_SERVER_PORT}/$${ACTUATOR_OBSCURE_PATH}/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
