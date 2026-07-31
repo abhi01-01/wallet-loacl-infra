@@ -284,6 +284,7 @@ services:
     restart: unless-stopped
 
     environment:
+      CLUSTER_ID: ${PROD_KAFKA_CLUSTER_ID}
       # KRaft identity
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -311,13 +312,15 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_MIN_INSYNC_REPLICAS: 1
       KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
 
-      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
       KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
 
     volumes:
-      - kafka_data:/tmp/kraft-combined-logs
+      - /opt/wallet-platform/data/kafka:/var/lib/kafka/data
 
     networks:
       - app-network
