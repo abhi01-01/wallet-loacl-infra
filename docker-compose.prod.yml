@@ -98,8 +98,6 @@ services:
     image: wallet-api-gateway:oci-local
     container_name: wallet-api-gateway
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:8082:8082"
     read_only: true
     tmpfs:
       - /tmp
@@ -114,11 +112,12 @@ services:
       REDIS_HOST: ${PROD_REDIS_HOST}
       REDIS_PORT: ${PROD_REDIS_PORT:-6379}
       REDIS_PASSWORD: ${PROD_REDIS_PASSWORD}
-      REDIS_SSL_ENABLED: ${PROD_REDIS_SSL_ENABLED:-true}
+      REDIS_SSL_ENABLED: ${PROD_REDIS_SSL_ENABLED:-false}
       SPRING_DATA_REDIS_HOST: ${PROD_REDIS_HOST}
       SPRING_DATA_REDIS_PORT: ${PROD_REDIS_PORT:-6379}
       SPRING_DATA_REDIS_PASSWORD: ${PROD_REDIS_PASSWORD}
-      SPRING_DATA_REDIS_SSL_ENABLED: ${PROD_REDIS_SSL_ENABLED:-true}
+      SPRING_DATA_REDIS_SSL_ENABLED: ${PROD_REDIS_SSL_ENABLED:-false}
+      CORS_ALLOWED_ORIGINS: https://${WEB_DOMAIN}
       TRUSTED_PROXY_CIDRS: ${PROD_TRUSTED_PROXY_CIDRS}
       JAVA_TOOL_OPTIONS: >-
         -XX:MaxRAMPercentage=65 -XX:+UseContainerSupport
@@ -135,7 +134,7 @@ services:
       - observability-network
     healthcheck:
       # served on the management port, which is not published outside app-network
-      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:$${MANAGEMENT_SERVER_PORT}/$${ACTUATOR_OBSCURE_PATH}/health || exit 1"]
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8082/actuator/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
