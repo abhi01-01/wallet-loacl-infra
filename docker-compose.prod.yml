@@ -133,8 +133,17 @@ services:
       - app-network
       - observability-network
     healthcheck:
-      # served on the management port, which is not published outside app-network
-      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8082/actuator/health || exit 1"]
+      test:
+        [
+          "CMD",
+          "curl",
+          "--fail",
+          "--silent",
+          "--show-error",
+          "--output",
+          "/dev/null",
+          "http://127.0.0.1:8082/actuator/health"
+        ]
       interval: 15s
       timeout: 5s
       retries: 5
